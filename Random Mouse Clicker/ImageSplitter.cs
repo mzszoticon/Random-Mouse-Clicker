@@ -1,4 +1,5 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
 
@@ -15,7 +16,7 @@ namespace Random_Mouse_Clicker
         private static ArrayList primeFactors;
         public static List<int> dimensionWidths;
         public static List<int> dimensionHeights;
-        public static Dictionary<int, int> dimensions;
+        public static List<Tuple<int, int>> dimensions;
 
         /**
          * Draws red lines over the image when user views preview tab
@@ -139,7 +140,7 @@ namespace Random_Mouse_Clicker
         {
             width = SnippingTool.getRectangleWidth();
             height = SnippingTool.getRectangleHeight();
-            dimensions = new Dictionary<int, int>();
+            dimensions = new List<Tuple<int, int>>();
             dimensionWidths = new List<int>();
             dimensionHeights = new List<int>();
 
@@ -178,7 +179,7 @@ namespace Random_Mouse_Clicker
             int newWidth = width / widthFactor;
             int newHeight = height / heightFactor;
 
-            dimensions.Add(newWidth, newHeight);
+            dimensions.Add(new Tuple<int, int>(heightFactor, widthFactor));
             dimensionWidths.Add(newWidth);
             dimensionHeights.Add(newHeight);
         }

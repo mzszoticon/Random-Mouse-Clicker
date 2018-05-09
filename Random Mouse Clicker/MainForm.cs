@@ -3,29 +3,26 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Net.NetworkInformation;
 using System.Threading;
 using System.Windows.Forms;
+using Random_Mouse_Clicker.Generators;
 
 namespace Random_Mouse_Clicker
 {
     public partial class MainForm : Form
     {
-        private int x1;
-        private int x2;
-        private int y1;
-        private int y2;
         private bool widthNotZero;
         private bool heightNotZero;
         private int displayedWidth;
         private int displayedHeight;
-        private Point monitorOffset;
-        private static Point location;
-        private int originalFormWidth;
-        private int originalFormHeight;
-        private Random random = new Random();
+        private readonly int originalFormWidth;
+        private readonly int originalFormHeight;
+        private readonly Random random = new Random();
         private Action<Point> moveAtMouseSpeed;
         private decimal[] minMax = new decimal[2];
         private readonly Hotkey hotkey = new Hotkey();
+        private INextPointGenerator generator = null;
 
         /**
          * Initialize the MainForm and store width and height information
@@ -42,6 +39,7 @@ namespace Random_Mouse_Clicker
             comboBoxDuration.SelectedIndex = 0;
 
             tabControl1.SelectedIndexChanged += tabControl1_SelectedIndexChanged;
+            forceAutomaticEnd();
         }
 
         /**
@@ -72,14 +70,22 @@ namespace Random_Mouse_Clicker
          * */
         private void startButton_Click(object sender, EventArgs e)
         {
-            x1 = SnippingTool.getDrawnRectangle().X;
-            x2 = SnippingTool.getDrawnRectangle().X + SnippingTool.getRectangleWidth();
-            y1 = SnippingTool.getDrawnRectangle().Y;
-            y2 = SnippingTool.getDrawnRectangle().Y + SnippingTool.getRectangleHeight();
+            Rectangle bounds = SnippingTool.getDrawnRectangle();
+            bounds.Offset(SnippingTool.clickingScreen.Bounds.Location);
+            checkClickInterval(comboBoxClickEvery, numericClickEveryMin.Value, numericClickEveryMax.Value);
+            moveAtMouseSpeed = checkMouseSpeed();
+
+            bool isSplit = checkBoxDivideInto.Checked && comboBoxDividedAreas.SelectedIndex != -1;
+            decimal clicks = checkClickDuration(comboBoxDuration, numericDuration.Value);
+            if (isSplit)
+            {
+                clicks = numericClickEachArea.Value;
+            }
 
             checkClickInterval(comboBoxClickEvery, numericClickEveryMin.Value, numericClickEveryMax.Value);
             moveAtMouseSpeed = checkMouseSpeed();
-            runManualOrAutomatic();
+
+            runManualOrAutomatic(bounds, isSplit ? ImageSplitter.dimensions[comboBoxDividedAreas.SelectedIndex].Item1 : 1, isSplit ? ImageSplitter.dimensions[comboBoxDividedAreas.SelectedIndex].Item2 : 1, false, (int)clicks);
         }
 
         /**
@@ -150,53 +156,48 @@ namespace Random_Mouse_Clicker
          * For manual, program will only stop when user presses CTRL+WIN+ESC
          * Minimizes form so window is not in the way
          * Performs clicking operations
-         * 
+         *
          * For automatic, checks the duration from the combo box
          * Starts a stopwatch to keep track of time
          * If the duration is not zero, will begin clicking
          * The checkClickDuration method will return 0 if being automatically ended by a certain number of clicks, rather than a numeric amount of time
          * */
-        private void runManualOrAutomatic()
+        private void runManualOrAutomatic(Rectangle bounds, int rows, int cols, bool sequential, int repeats)
         {
-            if (radioEndManually.Checked)
+            if (rows == 1 && cols == 1)
             {
-                ShowBalloonMessage("Press CTRL+WIN+ESC to exit the program...", "Random Mouse Clicker");
-                this.WindowState = FormWindowState.Minimized;
-                clickUntilManuallyEnded();
+                generator = new RandomPointGenerator(random, bounds, repeats);
+            }
+            else
+            {
+                if (sequential)
+                {
+                    generator = new SequentialSplitAreaPointGenerator(random, bounds, rows, cols, repeats);
+                }
+                else
+                {
+                    generator = new RandomSplitAreaPointGenerator(random, bounds, rows, cols, repeats);
+                }
             }
 
-            else if (radioEndAutomatically.Checked)
+            decimal duration = checkClickDuration(comboBoxDuration, numericDuration.Value);
+            if (duration > 0)
             {
-                decimal duration = checkClickDuration(comboBoxDuration, numericDuration.Value);
                 Stopwatch stopwatch = new Stopwatch();
                 stopwatch.Start();
 
                 ShowBalloonMessage("Program will end after " + numericDuration.Value + " " + comboBoxDuration.Text + " or when CTRL+WIN+ESC is pressed" +
-                    "...", "Random Mouse Clicker");
+                                   "...", "Random Mouse Clicker");
                 this.WindowState = FormWindowState.Minimized;
 
-                if (duration != 0)
-                {
-                    clickUntilAutomaticallyEnded(duration, stopwatch);
-                }
-            }
-        }
-
-        /**
-         * Checks if snip was completed on another monitor besides the main one
-         * Windows sees monitor names as \\.\DISPLAY1, \\.\DISPLAY2, \\.\DISPLAY3, etc.
-         * Have to add an extra backslash before each backslash in the name as an escape character
-         * Currently not used, but is kept for possible future updates
-         * */
-        private bool checkMultiMonitor()
-        {
-            if (SnippingTool.monitorName == "\\\\.\\DISPLAY1")
-            {
-                return false;
+                clickUntilAutomaticallyEnded(duration, stopwatch);
             }
             else
             {
-                return true;
+
+                ShowBalloonMessage("Press CTRL+WIN+ESC to exit the program...", "Random Mouse Clicker");
+                this.WindowState = FormWindowState.Minimized;
+                clickUntilManuallyEnded();
             }
         }
 
@@ -210,7 +211,6 @@ namespace Random_Mouse_Clicker
         {
             if (comboBox.Text == "click(s)")
             {
-                checkForDividedAreas(duration);
                 return 0;
             }
 
@@ -242,6 +242,16 @@ namespace Random_Mouse_Clicker
             return 0;
         }
 
+        private decimal getClicks(ComboBox comboBox, decimal clicks)
+        {
+            if (comboBox.Text == "click(s)")
+            {
+                return clicks;
+            }
+
+            return -1;
+        }
+
         /**
          * Starts a new thread so the hotkey has no issues exiting the program
          * Runs an infinite loop and performs clicking in random locations
@@ -251,7 +261,7 @@ namespace Random_Mouse_Clicker
 
             new Thread(delegate () {
 
-                while (true)
+                while (generator.HasNextPoint)
                 {
                     randomizeLocationAndClick();
                 }
@@ -267,7 +277,7 @@ namespace Random_Mouse_Clicker
         {
             new Thread(delegate () {
 
-                while (true)
+                while (generator.HasNextPoint)
                 {
                     if (stopwatch.ElapsedMilliseconds > duration)
                     {
@@ -282,7 +292,7 @@ namespace Random_Mouse_Clicker
 
             }).Start();
         }
-        
+
         /**
          * Randomizes the x,y coordinates and sets the location to within the user's selection
          * Adds monitor offset if clicking at a secondary monitor
@@ -291,42 +301,9 @@ namespace Random_Mouse_Clicker
          * */
         private void randomizeLocationAndClick()
         {
-            monitorOffset = SnippingTool.clickingScreen.Bounds.Location;
-
-            location = new Point(random.Next(x1, x2), random.Next(y1, y2));
-            location.X = location.X + monitorOffset.X;
-            location.Y = location.Y + monitorOffset.Y;
-
-            moveAtMouseSpeed(location);
+            var nextPoint = generator.GetNextPoint();
+            moveAtMouseSpeed(nextPoint);
             clickAndWait();
-        }
-
-        /**
-         * Randomizes the x,y coordinates and sets the location to within the user's selection
-         * Only randomizes within each specified area
-         * For all of the pairs of x coordinates, randomizes for all pairs of y coordinates so that each area is clicked
-         * Adds monitor offset if clicking at a secondary monitor
-         * Moves mouse at specified speed
-         * Clicks once at the location
-         * */
-        private void randomizeLocationAndClickEachArea()
-        {
-            monitorOffset = SnippingTool.clickingScreen.Bounds.Location;
-
-            for (int i = 0; i < ImageSplitter.xCoordinates.Count - 1; i++)
-            {
-                for (int j = 0; j < ImageSplitter.yCoordinates.Count - 1; j++)
-                {
-                    location = new Point(random.Next(x1 + ImageSplitter.xCoordinates[i], x1 + ImageSplitter.xCoordinates[i + 1]),
-                        random.Next(y1 + ImageSplitter.yCoordinates[j], y1 + ImageSplitter.yCoordinates[j + 1]));
-
-                    location.X = location.X + monitorOffset.X;
-                    location.Y = location.Y + monitorOffset.Y;
-
-                    moveAtMouseSpeed(location);
-                    clickAndWait();
-                }             
-            }          
         }
 
         /**
@@ -338,60 +315,6 @@ namespace Random_Mouse_Clicker
             MouseActions.MouseClick();
             Thread.Sleep(random.Next((int)minMax[0], (int)minMax[1]));
         }
-
-        /**
-         * Runs if ending automatically from a certain number of clicks
-         * If choosing to divide the region into areas, sets the areas to be clicked
-         * Clicks each area
-         * Otherwise clicks randomly until finished, since not choosing to divide into areas
-         * */
-        private void checkForDividedAreas(decimal duration)
-        {
-            if (checkBoxDivideInto.Checked)
-            {
-                ImageSplitter.setSplitAreas(comboBoxDividedAreas.SelectedIndex);
-                clickAllAreas(numericClickEachArea.Value);
-            }
-            else
-            {
-                clickUntilFinished(duration);
-            }
-        }
-
-        /**
-         * Clicks until number of clicks is reached
-         * Performed when end automatically is checked
-         * */
-        private void clickUntilFinished(decimal numberOfClicks)
-        {
-            new Thread(delegate () {
-
-                for (int i = 0; i < numberOfClicks; i++)
-                {
-                    randomizeLocationAndClick();                 
-                }
-
-                ShowBalloonMessage("Program has finished clicking", "Random Mouse Clicker");
-
-            }).Start();
-        }
-
-        /**
-         * Clicks areas, loops through if clicking each area multiple times
-         * */
-        private void clickAllAreas(decimal numberOfClicks)
-        {
-            new Thread(delegate () {
-
-                for (int i = 0; i < numberOfClicks; i++)
-                {
-                    randomizeLocationAndClickEachArea();
-                }
-
-                ShowBalloonMessage("Program has finished clicking", "Random Mouse Clicker");
-
-            }).Start();
-        }            
 
         /**
          * When choosing to end manually, disable the automatic duration form components
@@ -451,7 +374,7 @@ namespace Random_Mouse_Clicker
                 checkBoxDivideInto.Enabled = true;
 
                 if (displayedWidth != SnippingTool.getRectangleWidth() || displayedHeight != SnippingTool.getRectangleHeight())
-                {               
+                {
                     divideIntoEqualAreasDisplay();
                 }
             }
@@ -459,12 +382,12 @@ namespace Random_Mouse_Clicker
             {
                 previewPictureBox.Visible = true;
                 labelPreviewInstructions.Visible = false;
-                
+
                 if (SnippingTool.Image.Width > tabControl1.Width)
                 {
                     this.Width = SnippingTool.Image.Width + (this.Width - tabControl1.Width) + 8;
                 }
-                
+
                 if (SnippingTool.Image.Height > tabControl1.Height)
                 {
                     this.Height = SnippingTool.Image.Height + (this.Height - tabControl1.Height) + 25;
@@ -478,7 +401,7 @@ namespace Random_Mouse_Clicker
                 else
                 {
                     previewPictureBox.Image = SnippingTool.Image;
-                }                                        
+                }
             }
         }
 
@@ -503,12 +426,12 @@ namespace Random_Mouse_Clicker
             {
                 divideIntoEqualAreasDisplay();
                 enableDividedAreas(true);
-                forceAutomaticEnd();
+                //forceAutomaticEnd();
             }
             else
             {
                 enableDividedAreas(false);
-                setBackToManualEnd();
+                //setBackToManualEnd();
             }
         }
 
@@ -531,7 +454,7 @@ namespace Random_Mouse_Clicker
          * Used when dividing region into areas
          * */
         private void forceAutomaticEnd()
-        {          
+        {
             radioEndAutomatically.Checked = true;
             radioEndManually.Enabled = false;
             comboBoxDuration.Enabled = false;
@@ -615,7 +538,7 @@ namespace Random_Mouse_Clicker
             hotkey.Control = true;
             hotkey.Windows = true;
             hotkey.KeyCode = Keys.Escape;
-            
+
             hotkey.Pressed += Hk_Win_ESC_OnPressed;
 
             if (!hotkey.GetCanRegister(this))
